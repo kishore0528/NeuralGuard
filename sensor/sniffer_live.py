@@ -2,7 +2,7 @@ import asyncio
 import time
 import sys
 import os
-from scapy.all import sniff, IP, TCP
+from scapy.all import sniff, IP, TCP, conf, L3RawSocket
 
 # Add the project root to sys.path for cross-folder imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -94,10 +94,11 @@ def process_packet(packet):
 
 async def start_sniffing():
     print("NeuralGuard Live Sniffer Starting...")
-    print("Monitoring live TCP traffic and tracking network flows...")
+    print("Monitoring live TCP traffic on tailscale0 and tracking network flows...")
+    # Configure Scapy to use L3RawSocket for Tailscale/VPN interfaces
+    conf.L3socket = L3RawSocket
     # sniff is a blocking call
-    # Replace 'tailscale0' if your interface name was different in 'ip addr'
-    sniff(iface='tailscale0', prn=process_packet, store=False)
+    sniff(iface='tailscale0', prn=process_packet, store=False, filter="tcp")
 
 if __name__ == "__main__":
     try:
