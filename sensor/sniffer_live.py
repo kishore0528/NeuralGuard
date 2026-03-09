@@ -96,7 +96,8 @@ async def start_sniffing():
     print("NeuralGuard Live Sniffer Starting...")
     print("Monitoring live TCP traffic and tracking network flows...")
     # sniff is a blocking call
-    sniff(prn=process_packet, store=False, filter="tcp")
+    # Replace 'tailscale0' if your interface name was different in 'ip addr'
+    sniff(iface='tailscale0', prn=process_packet, store=False)
 
 if __name__ == "__main__":
     try:
