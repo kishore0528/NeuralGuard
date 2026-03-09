@@ -1,0 +1,13 @@
+# Environments
+venv/
+__pycache__/
+
+# Massive Datasets
+data/*.csv
+data/*.pcap
+
+# AI Models & Scalers (Optional to ignore, but good practice if they get large)
+# We will leave these un-ignored for now so your server can download the trained brain!
+
+# Database
+api/*.db
