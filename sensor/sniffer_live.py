@@ -1,114 +1,48 @@
-import asyncio
-import time
-import sys
 import os
-from scapy.all import sniff, IP, TCP, conf, L3RawSocket
-
-# Add the project root to sys.path for cross-folder imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from brain.ai_engine import predict_packet
+import time
+import asyncio
+from scapy.all import sniff, conf, L3RawSocket, IP, TCP
+from brain import ai_engine
 from api import database
 
-# Flow tracking dictionary
-# Key: "SrcIP:SrcPort-DstIP:DstPort"
-active_flows = {}
+# IMPORTANT: Force Scapy to use Layer 3 Raw Sockets for Tailscale/VPN compatibility
+conf.L3socket = L3RawSocket
 
-# ANSI color codes for printing
-RED_ALERT = "\033[91m\033[1m"
-RESET = "\033[0m"
+print("🔍 NeuralGuard Live Guard starting...")
+print("📡 Listening on 'tailscale0' for TCP traffic...")
 
 def process_packet(packet):
-    """
-    Triggers on every captured TCP packet.
-    """
-    if not packet.haslayer(TCP) or not packet.haslayer(IP):
-        return
+    # Check if the packet has IP and TCP layers
+    if packet.haslayer(IP) and packet.haslayer(TCP):
+        ip_layer = packet[IP]
+        tcp_layer = packet[TCP]
+        
+        src_ip = ip_layer.src
+        dest_ip = ip_layer.dst
+        src_port = tcp_layer.sport
+        dest_port = tcp_layer.dport
+        window_size = tcp_layer.window
 
-    src_ip = packet[IP].src
-    dest_ip = packet[IP].dst
-    src_port = packet[TCP].sport
-    dest_port = packet[TCP].dport
-    window_size = packet[TCP].window
-
-    # Create a flow key (directional)
-    flow_key = f"{src_ip}:{src_port}-{dest_ip}:{dest_port}"
-    reverse_key = f"{dest_ip}:{dest_port}-{src_ip}:{src_port}"
-
-    current_time = time.time()
-
-    if flow_key not in active_flows and reverse_key not in active_flows:
-        # New flow initialization
-        active_flows[flow_key] = {
-            'start_time': current_time,
-            'init_win_bytes_fwd': window_size,
-            'total_fwd_packets': 1,
-            'total_bwd_packets': 0,
-            'last_duration': 0,
-            'is_analyzed': False
-        }
-        # In this context, we treat the first packet as Forward
-    elif flow_key in active_flows:
-        # Existing Forward flow
-        flow = active_flows[flow_key]
-        flow['total_fwd_packets'] += 1
-        flow['last_duration'] = int((current_time - flow['start_time']) * 1000000) # Microseconds
-    else:
-        # Existing Backward flow
-        flow = active_flows[reverse_key]
-        flow['total_bwd_packets'] += 1
-        flow['last_duration'] = int((current_time - flow['start_time']) * 1000000) # Microseconds
-        flow_key = reverse_key # Use the primary key for consistency
-
-    # Once a flow hits at least 5 total packets, analyze it
-    flow = active_flows[flow_key]
-    total_packets = flow['total_fwd_packets'] + flow['total_bwd_packets']
-
-    if total_packets >= 5 and not flow['is_analyzed']:
-        # Extract the 5 required features
-        # [Destination Port, Init_Win_bytes_forward, Flow Duration, Total Fwd Packets, Total Backward Packets]
-        f_dest_port = dest_port
-        f_init_win = flow['init_win_bytes_fwd']
-        f_duration = flow['last_duration']
-        f_fwd_pkts = flow['total_fwd_packets']
-        f_bwd_pkts = flow['total_bwd_packets']
-
-        # Pass features to AI Engine
-        verdict, score = predict_packet(f_init_win, f_dest_port, f_duration, f_fwd_pkts, f_bwd_pkts)
-
-        if verdict == 1:
-            # Massive RED alert for malicious traffic
-            print(f"\n{RED_ALERT}!!! NEURALGUARD ALERT: MALICIOUS TRAFFIC DETECTED !!!{RESET}")
-            print(f"Flow: {src_ip} -> {dest_ip} | Type: TCP | Score: {score:.4f}")
-            print(f"Features: Port={f_dest_port}, Win={f_init_win}, Dur={f_duration}, Pkts={f_fwd_pkts}/{f_bwd_pkts}\n")
-            
-            # Save alert to the database
+        # Get prediction from our Deep Learning model
+        # Passing 0 for duration and 1 for pkts since it's a single-packet check for now
+        is_bot, confidence = ai_engine.predict_packet(window_size, dest_port, 0, 1, 0)
+        
+        if is_bot:
+            print(f"🚨 [ALERT] {src_ip} -> {dest_ip} | Port: {dest_port} | Conf: {confidence:.2f}")
+            # Log to SQLite
             try:
-                # database.log_alert is an async function
-                asyncio.run(database.log_alert(src_ip, dest_ip, f_init_win, score, 1))
+                asyncio.run(database.log_alert(src_ip, dest_ip, window_size, confidence, "MALICIOUS"))
             except Exception as e:
-                print(f"Error logging to database: {e}")
+                print(f"Database error: {e}")
+        else:
+            # Optional: Print benign traffic for debugging
+            # print(f"✅ [SAFE] {src_ip} -> {dest_ip} | Port: {dest_port}")
+            pass
 
-        # Mark as analyzed to avoid repeated alerts for the same flow
-        flow['is_analyzed'] = True
-
-async def start_sniffing():
-    print("NeuralGuard Live Sniffer Starting...")
-    print("Monitoring live TCP traffic on tailscale0 and tracking network flows...")
-    # Configure Scapy to use L3RawSocket for Tailscale/VPN interfaces
-    conf.L3socket = L3RawSocket
-    # sniff is a blocking call
-    sniff(iface='tailscale0', prn=process_packet, store=False, filter="tcp")
-
-if __name__ == "__main__":
-    try:
-        # Initialize database first
-        asyncio.run(database.init_db())
-        asyncio.run(start_sniffing())
-    except KeyboardInterrupt:
-        print("\nStopping Live Sniffer...")
-    except PermissionError:
-        print(f"\n{RED_ALERT}Error: Permission Denied.{RESET}")
-        print("Please run this script with Administrative/Sudo privileges to capture network packets.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+# Run with sudo to access tailscale0
+try:
+    sniff(iface="tailscale0", prn=process_packet, store=False, filter="tcp")
+except PermissionError:
+    print("❌ Error: You MUST run this script with 'sudo'!")
+except Exception as e:
+    print(f"❌ Error: {e}")
