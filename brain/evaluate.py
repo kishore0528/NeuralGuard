@@ -31,7 +31,7 @@ def map_label(label):
 
 def main():
     # 1. Load data (same pipeline as training)
-    csv_files = glob.glob('raw_data/*.csv')
+    csv_files = glob.glob('../raw_data/*.csv')
     df_list = []
     print(f"Loading {len(csv_files)} files...")
     for f in sorted(csv_files):
@@ -62,8 +62,8 @@ def main():
     X_test_scaled = scaler.transform(X_test)
 
     # 6. Load existing model
-    print("\nLoading existing model from brain/neuralguard_v2.h5...")
-    model = load_model('brain/neuralguard_v2.h5')
+    print("\nLoading existing model from neuralguard_v2.h5...")
+    model = load_model('neuralguard_v2.h5')
 
     # 7. Predict
     print("Running predictions on test set...")

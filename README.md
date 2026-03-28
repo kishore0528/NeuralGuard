@@ -380,10 +380,10 @@ REST API running on `:5001`:
 
 ### Evaluate Baseline
 
-Runs the model against a held-out test set and prints accuracy metrics:
+Runs the model against a held-out test set (from `raw_data/`) and prints metrics:
 
 ```bash
-.venv/bin/python evaluate_baseline.py
+.venv/bin/python brain/evaluate.py
 ```
 
 ---
@@ -400,6 +400,8 @@ neuralguard_enterprise/
 │   └── combat_test.sh        # Fully automated combat test (zero intervention)
 │
 ├── 🧠 brain/
+│   ├── train.py              # Model training script (CIC-IDS-2017 dataset)
+│   ├── evaluate.py           # Model evaluation / accuracy report
 │   ├── neuralguard_v2.h5     # Trained Keras model [NOT in git — too large]
 │   └── scaler.pkl            # Fitted StandardScaler [NOT in git]
 │
@@ -420,8 +422,8 @@ neuralguard_enterprise/
 │   └── provisioning/         # Auto-provisioned datasource + dashboard configs
 │
 ├── 🐳 docker-compose.yml     # PostgreSQL + Grafana containers
-├── 🤖 train_v2.py            # Model training script (CIC-IDS-2017 dataset)
-├── 📈 evaluate_baseline.py   # Model evaluation / accuracy report
+├── 🤖 train.py            # Link to brain/train.py (optional)
+├── 📈 evaluate.py         # Link to brain/evaluate.py (optional)
 ├── 📦 data/                  # Docker volume mounts (postgres + grafana data)
 ├── 📋 logs/                  # Runtime logs (sniffer.log, ip_manager_api.log)
 └── 🔧 .env                   # Environment variables (DB credentials, etc.)
@@ -484,7 +486,7 @@ The model was trained on the **CIC-IDS-2017** intrusion detection dataset.
 
 ```bash
 # Place raw CSV files in raw_data/
-.venv/bin/python train_v2.py
+.venv/bin/python brain/train.py
 ```
 
 Output files saved to `brain/`:

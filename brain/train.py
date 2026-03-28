@@ -84,7 +84,7 @@ def main():
     # ═══════════════════════════════════════════════════════════════════
     # 1. LOAD DATA
     # ═══════════════════════════════════════════════════════════════════
-    csv_files = sorted(glob.glob('raw_data/*.csv'))
+    csv_files = sorted(glob.glob('../raw_data/*.csv'))
     df_list = []
 
     print(f"[1/6] Loading {len(csv_files)} CSV files...")
@@ -229,10 +229,9 @@ def main():
     # ═══════════════════════════════════════════════════════════════════
     # SAVE MODEL & SCALER
     # ═══════════════════════════════════════════════════════════════════
-    os.makedirs('brain', exist_ok=True)
-
-    model.save('brain/neuralguard_v2.h5')
-    with open('brain/scaler.pkl', 'wb') as f:
+    # Save to current directory (brain/)
+    model.save('neuralguard_v2.h5')
+    with open('scaler.pkl', 'wb') as f:
         pickle.dump(scaler, f)
 
     print(f"\n✅ Model saved to brain/neuralguard_v2.h5")
