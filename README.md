@@ -327,7 +327,7 @@ sudo ./combat_test.sh [TARGET_IP]
 - **Auto-refresh:** 5 seconds
 - **Grafana URL with optimal settings:**
   ```
-  http://localhost:3000/d/postgres_ips_dash_001/neuralguard-ips-command-center?orgId=1&refresh=5s&from=now-5m&to=now
+  http://localhost:3000/d/postgres_ips_dash_005/neuralguard-ips-command-center?orgId=1&refresh=5s&from=now-5m&to=now
   ```
 
 ### Unblocking an IP from the Dashboard
