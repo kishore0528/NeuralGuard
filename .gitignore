@@ -1,0 +1,72 @@
+# ═══════════════════════════════════════════════════════════
+#  NeuralGuard IPS — .gitignore
+# ═══════════════════════════════════════════════════════════
+
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+*.so
+
+# ── Virtual Environment ───────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Environment / Secrets ─────────────────────────────────
+.env
+*.env.local
+
+# ── Model Binaries (too large for git) ───────────────────
+brain/*.h5
+brain/*.pkl
+brain/*.keras
+# Uncomment below if you want to track backup models:
+# !brain/*_backup.h5
+
+# ── Raw Training Data ─────────────────────────────────────
+raw_data/
+data/
+
+# ── Docker Volumes ────────────────────────────────────────
+data/postgres/
+data/grafana/
+
+# ── Runtime Logs & PIDs ───────────────────────────────────
+logs/
+*.log
+*.pid
+
+# ── SQLite (legacy) ───────────────────────────────────────
+*.db
+*.sqlite3
+sensor/dashboard_logs.db
+
+# ── IDE / Editor ──────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Jupyter ───────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Test / Coverage ───────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── OS ────────────────────────────────────────────────────
+.DS_Store
+*.tmp

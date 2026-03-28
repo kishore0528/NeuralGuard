@@ -1,0 +1,15 @@
+apiVersion: 1
+datasources:
+  - name: PostgreSQL
+    type: postgres
+    uid: postgres
+    access: proxy
+    url: postgres:5432
+    user: admin
+    secureJsonData:
+      password: adminpassword
+    isDefault: true
+    jsonData:
+      database: neuralguard
+      sslmode: disable
+      postgresVersion: 15
