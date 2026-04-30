@@ -281,7 +281,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE predicted_class\n    WHEN 0 THEN 'Benign'\n    WHEN 1 THEN 'DoS / DDoS'\n    WHEN 2 THEN 'PortScan'\n    WHEN 3 THEN 'Brute Force'\n    ELSE 'Other'\n  END AS \"Attack Type\",\n  COUNT(*) AS \"Count\"\nFROM alerts\nWHERE status != 'BENIGN'\nGROUP BY predicted_class\nORDER BY \"Count\" DESC",
+          "rawSql": "SELECT\n  CASE predicted_class\n    WHEN 0 THEN 'Benign'\n    WHEN 1 THEN 'DoS / DDoS'\n    WHEN 2 THEN 'PortScan'\n    WHEN 3 THEN 'Brute Force'\n    WHEN 4 THEN 'Other / Recon'\n    ELSE 'Unknown'\n  END AS \"Attack Type\",\n  COUNT(*) AS \"Count\"\nFROM alerts\nWHERE status != 'BENIGN'\nGROUP BY predicted_class\nORDER BY \"Count\" DESC",
           "refId": "A"
         }
       ],
@@ -416,7 +416,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS \"time\",\n  src_ip AS \"Source IP\",\n  dst_ip AS \"Target IP\",\n  dst_port AS \"Target Port\",\n  protocol AS \"Protocol\",\n  predicted_class AS \"Attack Type\",\n  confidence AS \"AI Confidence\",\n  status AS \"Status\"\nFROM alerts\nWHERE status = 'AUTO_BLOCKED'\nORDER BY timestamp DESC\nLIMIT 100",
+          "rawSql": "SELECT\n  timestamp AS \"time\",\n  src_ip AS \"Source IP\",\n  dst_ip AS \"Target IP\",\n  dst_port AS \"Target Port\",\n  protocol AS \"Protocol\",\n  CASE predicted_class\n    WHEN 1 THEN 'DoS / DDoS'\n    WHEN 2 THEN 'PortScan'\n    WHEN 3 THEN 'Brute Force'\n    WHEN 4 THEN 'Other / Recon'\n    ELSE 'Unknown'\n  END AS \"Attack Type\",\n  ROUND(confidence::numeric, 3) AS \"AI Confidence\",\n  status AS \"Status\"\nFROM alerts\nWHERE status = 'AUTO_BLOCKED'\nORDER BY timestamp DESC\nLIMIT 100",
           "refId": "A"
         }
       ],
@@ -474,7 +474,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS \"time\",\n  src_ip AS \"Source IP\",\n  dst_port AS \"Target Port\",\n  predicted_class AS \"Attack Type\",\n  confidence AS \"AI Confidence\"\nFROM alerts\nWHERE status = 'NEEDS_REVIEW'\nORDER BY timestamp DESC\nLIMIT 100",
+          "rawSql": "SELECT\n  timestamp AS \"time\",\n  src_ip AS \"Source IP\",\n  dst_port AS \"Target Port\",\n  CASE predicted_class\n    WHEN 1 THEN 'DoS / DDoS'\n    WHEN 2 THEN 'PortScan'\n    WHEN 3 THEN 'Brute Force'\n    WHEN 4 THEN 'Other / Recon'\n    ELSE 'Unknown'\n  END AS \"Attack Type\",\n  ROUND(confidence::numeric, 3) AS \"AI Confidence\"\nFROM alerts\nWHERE status = 'NEEDS_REVIEW'\nORDER BY timestamp DESC\nLIMIT 100",
           "refId": "A"
         }
       ],

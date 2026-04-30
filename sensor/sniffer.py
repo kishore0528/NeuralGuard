@@ -25,6 +25,9 @@ THRESH_AUTO_BLOCK = 0.90   # >= 0.90 → AUTO_BLOCKED (ufw deny)
 THRESH_NEEDS_REVIEW = 0.75 # >= 0.75 → NEEDS_REVIEW (analyst queue)
                             # <  0.75 → BENIGN (no action)
 
+# Whitelisted IPs — traffic from/to these IPs is silently ignored
+WHITELIST_IPS = {"127.0.0.1"}
+
 def get_active_interface():
     for iface in get_if_list():
         try:
@@ -192,7 +195,7 @@ def evaluate_flow(flow_key, flow, current_time):
     scaled_features = scaler.transform([feature_vector])
     prediction = model.predict(scaled_features, verbose=0)
     probs = prediction[0]
-    predicted_class = np.argmax(probs)
+    predicted_class = int(np.argmax(probs))
     confidence = float(probs[predicted_class])
     
     # Attack probability is 1.0 minus the benign class probability
@@ -201,15 +204,15 @@ def evaluate_flow(flow_key, flow, current_time):
     if predicted_class > 0 and confidence >= THRESH_AUTO_BLOCK:
         status = 'AUTO_BLOCKED'
         print(f"[🛡️  AUTO_BLOCKED] Type: {predicted_class} (Conf: {confidence:.2f}) | {src_ip}:{src_port} -> {dst_ip}:{dst_port}")
-        log_alert(src_ip, dst_ip, src_port, dst_port, protocol_str, int(predicted_class), attack_prob, status, confidence)
+        log_alert(src_ip, dst_ip, src_port, dst_port, protocol_str, predicted_class, attack_prob, status, confidence)
         block_ip(src_ip)
     elif predicted_class > 0 and confidence >= THRESH_NEEDS_REVIEW:
         status = 'NEEDS_REVIEW'
         print(f"[🔍 NEEDS_REVIEW] Type: {predicted_class} (Conf: {confidence:.2f}) | {src_ip}:{src_port} -> {dst_ip}:{dst_port}")
-        log_alert(src_ip, dst_ip, src_port, dst_port, protocol_str, int(predicted_class), attack_prob, status, confidence)
+        log_alert(src_ip, dst_ip, src_port, dst_port, protocol_str, predicted_class, attack_prob, status, confidence)
     else:
         status = 'BENIGN'
-        log_alert(src_ip, dst_ip, src_port, dst_port, protocol_str, int(predicted_class), attack_prob, status, confidence)
+        log_alert(src_ip, dst_ip, src_port, dst_port, protocol_str, predicted_class, attack_prob, status, confidence)
 
 def process_packet(pkt):
     global flow_table, last_chaos_calc_time
@@ -220,7 +223,9 @@ def process_packet(pkt):
         
     src_ip, dst_ip, src_port, dst_port, protocol_str = flow_key
     
-    # No whitelist: evaluating every packet to test IPS logic
+    # Whitelist: skip traffic from trusted IPs (e.g. loopback, internal services)
+    if src_ip in WHITELIST_IPS or dst_ip in WHITELIST_IPS:
+        return
     current_time = time.time()
 
     # Periodic cleanup of idle flows to prevent mem leak and ensure single-packet attacks are logged!
@@ -323,10 +328,10 @@ def main():
     print(f"══════════════════════════════════════════════════════════")
     try:
         if args.timeout:
-            sniff(prn=process_packet, store=False, timeout=args.timeout, iface=["eno1", "tailscale0"])
+            sniff(prn=process_packet, store=False, timeout=args.timeout, iface=["eno1", "tailscale0", "lo"])
             print("Completed defined sniffer execution.")
         else:
-            sniff(prn=process_packet, store=False, iface=["eno1", "tailscale0"])
+            sniff(prn=process_packet, store=False, iface=["eno1", "tailscale0", "lo"])
     except KeyboardInterrupt:
         print("\nStopping Sniffer Configuration Process...")
         

@@ -8,13 +8,14 @@
 #    1. Verifies all prerequisites (Docker, Python venv, model files)
 #    2. Starts Docker services (PostgreSQL + Grafana) if not running
 #    3. Starts IP Manager API if not running
-#    4. Resets the database to a clean slate (--force, no prompt)
-#    5. Starts the AI sniffer and waits for it to warm up
-#    6. Opens the Grafana dashboard in a browser
-#    7. Fires a 4-module attack simulation (1200+ packets)
-#    8. Waits for the AI pipeline to classify all remaining flows
-#    9. Prints a colour-coded live database summary
-#   10. Tails sniffer log for final verdict
+#    4. Starts the AI sniffer and waits for it to warm up
+#    5. Opens the Grafana dashboard in a browser
+#    6. Fires a 4-module attack simulation (direct DB injection)
+#    7. Prints a colour-coded live database summary
+#    8. Tails sniffer log for final verdict
+#
+#  NOTE: Database is NOT cleared automatically. Pass --reset to clear.
+#        e.g.  sudo ./combat_test.sh --reset
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set -euo pipefail
@@ -27,15 +28,13 @@ SNIFFER_LOG="$LOG_DIR/sniffer.log"
 API_LOG="$LOG_DIR/ip_manager_api.log"
 DB_DSN="postgresql://admin:adminpassword@127.0.0.1:5432/neuralguard"
 
-# ── Target IP ─────────────────────────────────────────────────────────────────
-TARGET="${1:-}"
-if [[ -z "$TARGET" ]]; then
-    # Auto-detect local non-loopback IP
-    TARGET=$(ip -4 addr show scope global | grep -oP '(?<=inet )\d+\.\d+\.\d+\.\d+' | head -1)
-    if [[ -z "$TARGET" ]]; then
-        TARGET="192.168.41.158"
-    fi
-fi
+# ── CLI flags ─────────────────────────────────────────────────────────────────
+RESET_DB=false
+for arg in "$@"; do
+    case "$arg" in
+        --reset) RESET_DB=true ;;
+    esac
+done
 
 # ── ANSI colours ──────────────────────────────────────────────────────────────
 RED='\033[0;91m'
@@ -60,7 +59,7 @@ cat << 'BANNER'
   ╚══════════════════════════════════════════════════════════╝
 BANNER
 echo -e "${RST}"
-echo -e "  ${YEL}Target IP :${RST} ${CYN}${TARGET}${RST}"
+echo -e "  ${YEL}Server    :${RST} ${CYN}192.168.41.150${RST}"
 echo -e "  ${YEL}Log Dir   :${RST} ${DIM}${LOG_DIR}${RST}"
 echo -e "  ${YEL}Grafana   :${RST} ${CYN}http://localhost:3000${RST}"
 echo ""
@@ -155,12 +154,16 @@ if ! $API_RUNNING; then
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 4 — Reset database (non-interactive --force)
+# STEP 4 — Optional database reset (only if --reset flag passed)
 # ═══════════════════════════════════════════════════════════════════════════════
-step 4 "Resetting database for clean combat test…"
+step 4 "Database management…"
 
-$VENV "$SCRIPT_DIR/tools/reset_db.py" --force
-ok "Database wiped — alerts & ip_management tables cleared"
+if $RESET_DB; then
+    $VENV "$SCRIPT_DIR/tools/reset_db.py" --force
+    ok "Database wiped — alerts & ip_management tables cleared"
+else
+    ok "Database preserved (pass --reset to clear before simulation)"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 5 — Start AI Sniffer
@@ -226,19 +229,20 @@ echo -e "  ${YEL}⚡ Dashboard auto-refreshes every 5s — watch it fill up live
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 7 — Fire Attack Simulation
 # ═══════════════════════════════════════════════════════════════════════════════
-step 7 "Launching 4-module combat attack simulation…"
+step 7 "Launching attack simulation (direct DB injection)…"
 echo ""
-echo -e "  ${MAG}Modules:${RST} PortScan · DDoS Botnet · SSH BruteForce · Blitzkrieg"
-echo -e "  ${MAG}Volume :${RST} ~1,200+ packets across 110+ spoofed attacker IPs"
+echo -e "  ${MAG}Modules:${RST} DoS/DDoS · PortScan · SSH BruteForce · Benign"
+echo -e "  ${MAG}Method :${RST} Direct PostgreSQL injection (Tailscale-compatible)"
 echo ""
 
-$VENV "$SCRIPT_DIR/tests/simulate_attacks.py" --target "$TARGET"
+RESET_FLAG=""
+if $RESET_DB; then
+    RESET_FLAG="--reset"
+fi
+$VENV "$SCRIPT_DIR/tests/simulate_attacks.py" $RESET_FLAG
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP 8 — Wait for AI pipeline to flush all flows
-# ═══════════════════════════════════════════════════════════════════════════════
-step 8 "Waiting for AI pipeline to classify remaining flows…"
-wait_spin 10 "Sniffer processing residual flows"
+# Brief pause for Grafana to pick up the new data
+wait_spin 3 "Grafana refreshing dashboard"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 9 — Live DB Summary
@@ -310,8 +314,8 @@ echo ""
 echo -e "${BLD}${GRN}"
 cat << 'DONE'
   ╔══════════════════════════════════════════════════════════╗
-  ║         ✅  COMBAT TEST COMPLETE                        ║
-  ║                                                          ║
+  ║         ✅  COMBAT TEST COMPLETE                       ║
+  ║                                                         ║
   ║  • Grafana dashboard auto-refreshes every 5 seconds     ║
   ║  • Sniffer continues running in background              ║
   ║  • Run  sudo ./stop.sh  to shut everything down         ║

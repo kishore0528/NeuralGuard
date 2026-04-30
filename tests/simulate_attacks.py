@@ -1,191 +1,227 @@
 #!/usr/bin/env python3
 """
-NeuralGuard — Combat Attack Simulator v2
-════════════════════════════════════════
-Four-phase attack simulation designed to exercise every panel
-on the Grafana IPS Command Center dashboard:
+NeuralGuard — Attack Simulation for Dashboard Demo
+════════════════════════════════════════════════════
+Injects realistic attack alerts directly into PostgreSQL with real-time
+staggered timing so the Grafana dashboard fills up gradually.
 
-  Module 1 — PortScan      (class 2): SYN sweep across 100 ports
-  Module 2 — DDoS Botnet   (class 1): 500-packet burst from 50 spoofed IPs
-  Module 3 — SSH BruteForce(class 3): Rapid SYN storm on port 22
-  Module 4 — Blitzkrieg    (mixed)  : High-volume mixed wave from 20 IPs
+Each module pauses between alert injections so you can watch the dashboard
+update live. AUTO_BLOCKED IPs are also added to ip_management (blacklist).
 
-Usage:
-    sudo .venv/bin/python tests/simulate_attacks.py --target <IP>
+Usage:  python tests/simulate_attacks.py [--reset] [--fast]
+        --reset  Clears existing alerts before injecting
+        --fast   Skip delays (instant injection like before)
 """
 
-import time
-import random
-import sys
 import argparse
+import random
+import time
+import sys
+from datetime import datetime
 
-import logging
-logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
+import psycopg2
 
-from scapy.all import IP, TCP, send, conf
+DB_DSN = "postgresql://admin:adminpassword@127.0.0.1:5432/neuralguard"
 
-# Suppress scapy verbose output
-conf.verb = 0
+# ── ANSI colours ──────────────────────────────────────────────────────────────
+R = "\033[91m"; Y = "\033[93m"; C = "\033[96m"; G = "\033[92m"
+M = "\033[95m"; B = "\033[1m"; DIM = "\033[2m"; RST = "\033[0m"
 
-# ── CLI ──────────────────────────────────────────────────────────────────────
-parser = argparse.ArgumentParser(description="NeuralGuard Combat Attack Simulator v2")
-parser.add_argument("--target",   type=str, default="192.168.41.158", help="Target IP address")
-parser.add_argument("--delay",    type=float, default=0.005,          help="Inter-packet delay (seconds)")
-parser.add_argument("--no-spoof", action="store_true",                help="Disable IP spoofing (use real src IP)")
-args = parser.parse_args()
+# ── IP Pools ──────────────────────────────────────────────────────────────────
+BOTNET_IPS = [f"10.{random.randint(1,254)}.{random.randint(1,254)}.{random.randint(1,254)}" for _ in range(40)]
+SCANNER_IPS = [f"172.{random.randint(16,31)}.{random.randint(1,254)}.{random.randint(1,254)}" for _ in range(15)]
+BRUTEFORCE_IPS = [f"192.168.{random.randint(1,254)}.{random.randint(1,254)}" for _ in range(10)]
+BENIGN_IPS = [
+    "192.168.41.10", "192.168.41.20", "192.168.41.30",
+    "192.168.41.40", "192.168.41.50", "10.0.0.1", "10.0.0.2",
+]
 
-TARGET_IP = args.target
-PKT_DELAY  = args.delay
+TARGET_IP = "192.168.41.150"
 
-# ── ANSI Colours ─────────────────────────────────────────────────────────────
-R  = "\033[91m"    # red
-Y  = "\033[93m"    # yellow
-C  = "\033[96m"    # cyan
-G  = "\033[92m"    # green
-M  = "\033[95m"    # magenta
-B  = "\033[1m"     # bold
-DIM= "\033[2m"     # dim
-RST= "\033[0m"     # reset
+stats = {"ddos": 0, "portscan": 0, "bruteforce": 0, "benign": 0}
+blacklisted = set()
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-BOTNET_POOL  = [f"10.{random.randint(0,254)}.{random.randint(1,254)}.{random.randint(1,254)}" for _ in range(80)]
-ROUTER_POOL  = [f"172.{random.randint(16,31)}.{random.randint(0,254)}.{random.randint(1,254)}" for _ in range(30)]
-ALL_FAKE_IPS = BOTNET_POOL + ROUTER_POOL
-
-stats = {
-    "portscan":   0,
-    "ddos":       0,
-    "bruteforce": 0,
-    "blitzkrieg": 0,
-}
-
-def rnd_ip():
-    return random.choice(ALL_FAKE_IPS)
-
-def rnd_sport():
-    return random.randint(1024, 65535)
 
 def bar(done, total, width=30):
-    filled = int(width * done / total)
-    return f"[{'█' * filled}{'░' * (width - filled)}] {done}/{total}"
+    f = int(width * done / total)
+    return f"[{'█' * f}{'░' * (width - f)}] {done}/{total}"
 
-def send_pkt(src_ip, dst_port, flags="S", payload=b"", extra_syn=0, extra_rst=0):
-    """Craft and send a single packet."""
-    pkt = IP(src=src_ip, dst=TARGET_IP) / TCP(
-        sport=rnd_sport(),
-        dport=dst_port,
-        flags=flags,
-        window=random.choice([1024, 2048, 4096, 8192])
-    )
-    if payload:
-        pkt = pkt / payload
-    send(pkt, verbose=0)
 
-# ── Module 1: PortScan ───────────────────────────────────────────────────────
-def module_1_portscan():
-    """Sweep 100 random destination ports with SYN packets from a single attacker IP."""
-    attacker = rnd_ip()
-    print(f"\n{B}{R}[MODULE 1] PortScan{RST}  ←  attacker: {C}{attacker}{RST}  →  target: {C}{TARGET_IP}{RST}")
-    print(f"{DIM}  Strategy: SYN sweep across 100 random ports (mimics nmap -sS){RST}\n")
+def connect_db():
+    for attempt in range(5):
+        try:
+            return psycopg2.connect(DB_DSN)
+        except Exception as e:
+            print(f"  {Y}DB attempt {attempt + 1}: {e}{RST}")
+            time.sleep(2)
+    print(f"  {R}[✗] Failed to connect to PostgreSQL{RST}")
+    sys.exit(1)
 
-    for i in range(1, 101):
-        dst_port = random.randint(1, 1024)
-        send_pkt(attacker, dst_port, flags="S")
-        stats["portscan"] += 1
 
-        if i % 20 == 0:
-            print(f"  {bar(i, 100)}  {G}✓{RST}", flush=True)
-        time.sleep(PKT_DELAY)
+def insert_one(conn, alert):
+    """Insert a single alert into the database."""
+    cur = conn.cursor()
+    cur.execute('''
+        INSERT INTO alerts (timestamp, src_ip, dst_ip, src_port, dst_port,
+                            protocol, predicted_class, chaos_score, status, confidence)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ''', alert)
+    conn.commit()
+    cur.close()
 
-    print(f"\n  {G}[✓] PortScan complete — {stats['portscan']} SYN probes sent{RST}\n")
 
-# ── Module 2: DDoS Botnet Burst ───────────────────────────────────────────────
-def module_2_ddos():
-    """500 SYN packets to port 80 from 50 distinct spoofed botnet IPs."""
-    print(f"\n{B}{R}[MODULE 2] DDoS Botnet Burst{RST}  →  target: {C}{TARGET_IP}:80{RST}")
-    print(f"{DIM}  Strategy: 500 SYN packets from 50 unique botnet members (HTTP flood wave){RST}\n")
+def blacklist_ip(conn, ip):
+    """Add an IP to the ip_management blacklist table."""
+    if ip in blacklisted:
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute('''
+            INSERT INTO ip_management (ip_address, status)
+            VALUES (%s, 'BLACKLISTED')
+            ON CONFLICT (ip_address) DO NOTHING
+        ''', (ip,))
+        conn.commit()
+        cur.close()
+        blacklisted.add(ip)
+    except Exception:
+        pass
 
-    botnet_subset = random.sample(ALL_FAKE_IPS, min(50, len(ALL_FAKE_IPS)))
-    pkt_per_bot   = max(1, 500 // len(botnet_subset))
 
-    total = 0
-    for bot_ip in botnet_subset:
-        for _ in range(pkt_per_bot):
-            payload = b"X" * random.randint(16, 64)
-            send_pkt(bot_ip, 80, flags="S", payload=payload)
-            total += 1
-            stats["ddos"] += 1
-        time.sleep(PKT_DELAY * 2)
+# ── Module 1: DoS/DDoS ───────────────────────────────────────────────────────
+def module_ddos(conn, delay):
+    print(f"\n  {B}{R}[MODULE 1]{RST} DoS/DDoS Botnet  →  {C}{TARGET_IP}:80/443{RST}")
+    print(f"  {DIM}40 botnet IPs launching SYN flood{RST}\n")
 
-        if total % 100 == 0:
-            print(f"  {bar(total, 500)}  {G}✓{RST}", flush=True)
+    bots = random.sample(BOTNET_IPS, 40)
+    for i, bot_ip in enumerate(bots):
+        ts = datetime.now()
+        dst_port = random.choice([80, 443, 8080])
+        src_port = random.randint(40000, 60000)
+        confidence = round(random.uniform(0.91, 0.99), 3)
+        chaos = round(random.uniform(0.80, 0.95), 3)
 
-    print(f"\n  {G}[✓] DDoS burst complete — {stats['ddos']} packets from {len(botnet_subset)} bots{RST}\n")
+        alert = (ts, bot_ip, TARGET_IP, src_port, dst_port,
+                 'TCP', 1, chaos, 'AUTO_BLOCKED', confidence)
+        insert_one(conn, alert)
+        blacklist_ip(conn, bot_ip)
+        stats["ddos"] += 1
 
-# ── Module 3: SSH Brute Force ─────────────────────────────────────────────────
-def module_3_bruteforce():
-    """Rapid SYN storm on port 22 from 10 attacker IPs — classic credential stuffing pattern."""
-    print(f"\n{B}{M}[MODULE 3] SSH Brute Force{RST}  →  target: {C}{TARGET_IP}:22{RST}")
-    print(f"{DIM}  Strategy: 200 rapid SYN bursts on SSH port from 10 distinct sources{RST}\n")
+        if (i + 1) % 5 == 0:
+            print(f"    {bar(i+1, 40)}  {R}⚡ {bot_ip} → :{dst_port}{RST}  "
+                  f"{G}AUTO_BLOCKED{RST}", flush=True)
 
-    attackers = random.sample(ALL_FAKE_IPS, 10)
-    total = 0
+        time.sleep(delay)
 
-    for i, atk_ip in enumerate(attackers):
-        bursts = 20  # 20 rapid SYNs per attacker
-        for j in range(bursts):
-            # Brute force: small window, rapid resets after SYN
-            pkt = IP(src=atk_ip, dst=TARGET_IP) / TCP(
-                sport=rnd_sport(),
-                dport=22,
-                flags="S",
-                window=512
-            )
-            send(pkt, verbose=0)
-            total += 1
-            stats["bruteforce"] += 1
-            time.sleep(PKT_DELAY)
+    print(f"\n  {G}[✓]{RST} {stats['ddos']} DDoS alerts — {len([b for b in bots])} IPs blacklisted\n")
 
-        print(f"  Attacker {i+1:02d}/{len(attackers)}: {C}{atk_ip}{RST}  {bar(total, 200)}  {G}✓{RST}", flush=True)
 
-    print(f"\n  {G}[✓] Brute Force complete — {stats['bruteforce']} SYN bursts across {len(attackers)} attackers{RST}\n")
+# ── Module 2: PortScan ────────────────────────────────────────────────────────
+def module_portscan(conn, delay):
+    print(f"  {B}{C}[MODULE 2]{RST} PortScan  →  {C}{TARGET_IP}{RST}")
+    print(f"  {DIM}10 scanners probing multiple ports{RST}\n")
 
-# ── Module 4: Blitzkrieg (mixed high-volume) ─────────────────────────────────
-def module_4_blitzkrieg():
-    """High-volume mixed attack wave — all attack types simultaneously from 20 IPs."""
-    print(f"\n{B}{R}[MODULE 4] BLITZKRIEG — Mixed High-Volume Wave{RST}  →  target: {C}{TARGET_IP}{RST}")
-    print(f"{DIM}  Strategy: 400 mixed packets (DDoS/Scan/BruteForce) from 20 concurrent attackers{RST}\n")
+    scanners = random.sample(SCANNER_IPS, 10)
+    count = 0
+    for scanner_ip in scanners:
+        num_probes = random.randint(2, 5)
+        for _ in range(num_probes):
+            ts = datetime.now()
+            dst_port = random.choice([22, 80, 443, 21, 23, 25, 53, 110, 135, 139,
+                                      445, 993, 995, 1433, 3306, 3389, 5432, 8080])
+            src_port = random.randint(40000, 60000)
+            confidence = round(random.uniform(0.78, 0.96), 3)
+            chaos = round(random.uniform(0.60, 0.85), 3)
+            status = 'AUTO_BLOCKED' if confidence >= 0.90 else 'NEEDS_REVIEW'
 
-    attackers = random.sample(ALL_FAKE_IPS, 20)
-    ATTACK_PLANS = [
-        # (dst_port, flags, payload_size, label)
-        (80,   "S", 48, "DDoS"),
-        (443,  "S", 48, "DDoS"),
-        (22,   "S", 0,  "BruteForce"),
-        (21,   "S", 0,  "BruteForce"),
-        (None, "S", 0,  "PortScan"),   # random port
-    ]
+            alert = (ts, scanner_ip, TARGET_IP, src_port, dst_port,
+                     'TCP', 2, chaos, status, confidence)
+            insert_one(conn, alert)
+            if status == 'AUTO_BLOCKED':
+                blacklist_ip(conn, scanner_ip)
+            count += 1
 
-    total = 0
-    for i in range(400):
-        atk_ip   = random.choice(attackers)
-        plan     = random.choice(ATTACK_PLANS)
-        dst_port = plan[0] if plan[0] else random.randint(1, 1024)
-        payload  = (b"G" * plan[2]) if plan[2] else b""
+            time.sleep(delay * 0.5)  # Scans are faster
 
-        send_pkt(atk_ip, dst_port, flags=plan[1], payload=payload)
-        total += 1
-        stats["blitzkrieg"] += 1
+        stats["portscan"] = count
+        print(f"    {C}🔍 {scanner_ip}{RST} scanned {num_probes} ports", flush=True)
+        time.sleep(delay)
 
-        if total % 80 == 0:
-            print(f"  {bar(total, 400)}  {G}✓{RST}", flush=True)
+    print(f"\n  {G}[✓]{RST} {stats['portscan']} PortScan alerts from {len(scanners)} scanners\n")
 
-        time.sleep(PKT_DELAY)
 
-    print(f"\n  {G}[✓] Blitzkrieg complete — {stats['blitzkrieg']} mixed packets across {len(attackers)} attackers{RST}\n")
+# ── Module 3: BruteForce ─────────────────────────────────────────────────────
+def module_bruteforce(conn, delay):
+    print(f"  {B}{M}[MODULE 3]{RST} SSH Brute Force  →  {C}{TARGET_IP}:22{RST}")
+    print(f"  {DIM}8 attackers hammering SSH/FTP/RDP{RST}\n")
 
-# ── Entry Point ───────────────────────────────────────────────────────────────
+    attackers = random.sample(BRUTEFORCE_IPS, 8)
+    count = 0
+    for atk_ip in attackers:
+        num_attempts = random.randint(2, 4)
+        for _ in range(num_attempts):
+            ts = datetime.now()
+            dst_port = random.choice([22, 22, 22, 21, 23, 3389])
+            src_port = random.randint(40000, 60000)
+            confidence = round(random.uniform(0.80, 0.97), 3)
+            chaos = round(random.uniform(0.70, 0.90), 3)
+            status = 'AUTO_BLOCKED' if confidence >= 0.90 else 'NEEDS_REVIEW'
+
+            alert = (ts, atk_ip, TARGET_IP, src_port, dst_port,
+                     'TCP', 3, chaos, status, confidence)
+            insert_one(conn, alert)
+            if status == 'AUTO_BLOCKED':
+                blacklist_ip(conn, atk_ip)
+            count += 1
+
+            time.sleep(delay * 0.7)
+
+        stats["bruteforce"] = count
+        print(f"    {M}🔓 {atk_ip}{RST} → {num_attempts} login attempts", flush=True)
+        time.sleep(delay)
+
+    print(f"\n  {G}[✓]{RST} {stats['bruteforce']} BruteForce alerts from {len(attackers)} attackers\n")
+
+
+# ── Module 4: Benign ──────────────────────────────────────────────────────────
+def module_benign(conn, delay):
+    print(f"  {B}{G}[MODULE 4]{RST} Benign Traffic (normal baseline)")
+    print(f"  {DIM}40 normal connections — web, DNS, email{RST}\n")
+
+    for i in range(40):
+        ts = datetime.now()
+        src_ip = random.choice(BENIGN_IPS)
+        dst_port = random.choice([80, 443, 53, 993, 587, 8080])
+        src_port = random.randint(40000, 65000)
+        protocol = random.choice(['TCP', 'TCP', 'TCP', 'UDP'])
+        confidence = round(random.uniform(0.95, 1.0), 3)
+        chaos = round(random.uniform(0.0, 0.15), 3)
+
+        alert = (ts, src_ip, TARGET_IP, src_port, dst_port,
+                 protocol, 0, chaos, 'BENIGN', confidence)
+        insert_one(conn, alert)
+        stats["benign"] += 1
+
+        if (i + 1) % 10 == 0:
+            print(f"    {bar(i+1, 40)}  {G}✓ normal traffic{RST}", flush=True)
+
+        time.sleep(delay * 0.3)  # Benign flows in faster
+
+    print(f"\n  {G}[✓]{RST} {stats['benign']} benign flow records\n")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="NeuralGuard Attack Simulator")
+    parser.add_argument("--reset", action="store_true",
+                        help="Clear existing alerts before injecting")
+    parser.add_argument("--fast", action="store_true",
+                        help="Skip delays (instant injection)")
+    args = parser.parse_args()
+
+    # 0.8s between alerts when live, 0 when --fast
+    delay = 0.0 if args.fast else 0.8
+
     print(f"""
 {B}{R}
   ███╗   ██╗███████╗██╗   ██╗██████╗  █████╗ ██╗
@@ -194,64 +230,59 @@ if __name__ == "__main__":
   ██║╚██╗██║██╔══╝  ██║   ██║██╔══██╗██╔══██║██║
   ██║ ╚████║███████╗╚██████╔╝██║  ██║██║  ██║███████╗
   ╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
-  {RST}{C}G U A R D   —   C O M B A T   S I M U L A T O R   v 2{RST}
+  {RST}{C}G U A R D  —  A T T A C K   S I M U L A T O R{RST}
 
-  {Y}Target  :{RST} {TARGET_IP}
-  {Y}Modules :{RST} PortScan · DDoS Botnet · SSH BruteForce · Blitzkrieg
-  {Y}Bots    :{RST} {len(ALL_FAKE_IPS)} spoofed IPs across 2 subnets
-  {Y}Delay   :{RST} {PKT_DELAY}s/packet
+  {Y}Target   :{RST} {TARGET_IP}
+  {Y}Method   :{RST} Direct DB injection (Tailscale-compatible)
+  {Y}Mode     :{RST} {'⚡ Fast (instant)' if args.fast else '🔴 Live (real-time — watch Grafana!)'}
+  {Y}Attacks  :{RST} DoS/DDoS · PortScan · BruteForce · Benign
 """)
+
+    conn = connect_db()
+    print(f"  {G}[✓] Connected to PostgreSQL{RST}\n")
+
+    if args.reset:
+        cur = conn.cursor()
+        cur.execute("TRUNCATE TABLE alerts RESTART IDENTITY;")
+        cur.execute("TRUNCATE TABLE ip_management RESTART IDENTITY;")
+        conn.commit()
+        cur.close()
+        print(f"  {Y}[✓] Database cleared{RST}\n")
 
     try:
         t_start = time.time()
 
-        # ── Phase 1: PortScan ────────────────────────────────────────────────
-        module_1_portscan()
-        print(f"{Y}  ⏳ Waiting 3s for sniffer to flush flows…{RST}")
-        time.sleep(3)
+        module_ddos(conn, delay)
+        module_portscan(conn, delay)
+        module_bruteforce(conn, delay)
+        module_benign(conn, delay)
 
-        # ── Phase 2: DDoS Botnet ─────────────────────────────────────────────
-        module_2_ddos()
-        print(f"{Y}  ⏳ Waiting 3s for sniffer to flush flows…{RST}")
-        time.sleep(3)
-
-        # ── Phase 3: SSH BruteForce ──────────────────────────────────────────
-        module_3_bruteforce()
-        print(f"{Y}  ⏳ Waiting 3s for sniffer to flush flows…{RST}")
-        time.sleep(3)
-
-        # ── Phase 4: Blitzkrieg ──────────────────────────────────────────────
-        module_4_blitzkrieg()
-
-        # ── Final wait for AI pipeline to process remaining flows ─────────────
-        print(f"\n{C}  ⏳ Waiting 8s for sniffer to process remaining flows…{RST}")
-        time.sleep(8)
-
+        conn.close()
         elapsed = time.time() - t_start
-        total_pkts = sum(stats.values())
+        total = sum(stats.values())
 
         print(f"""
 {B}{'═' * 60}{RST}
-  {G}[✓] COMBAT SIMULATION COMPLETE{RST}
+  {G}[✓] SIMULATION COMPLETE{RST}
 
-  {'Module':<18} {'Packets':>8}
-  {'─'*28}
-  {'PortScan':<18} {stats['portscan']:>8}
-  {'DDoS Botnet':<18} {stats['ddos']:>8}
-  {'SSH BruteForce':<18} {stats['bruteforce']:>8}
-  {'Blitzkrieg':<18} {stats['blitzkrieg']:>8}
-  {'─'*28}
-  {'TOTAL':<18} {total_pkts:>8}
+  {'Attack Type':<20} {'Count':>6}  {'Status'}
+  {'─' * 50}
+  {R}{'DoS / DDoS':<20}{RST} {stats['ddos']:>6}  AUTO_BLOCKED
+  {C}{'PortScan':<20}{RST} {stats['portscan']:>6}  AUTO_BLOCKED / NEEDS_REVIEW
+  {M}{'SSH BruteForce':<20}{RST} {stats['bruteforce']:>6}  AUTO_BLOCKED / NEEDS_REVIEW
+  {G}{'Benign':<20}{RST} {stats['benign']:>6}  BENIGN
+  {'─' * 50}
+  {'TOTAL':<20} {total:>6}
+  {'Blacklisted IPs':<20} {len(blacklisted):>6}
 
   {Y}Elapsed : {elapsed:.1f}s{RST}
-  {C}→ Check Grafana at http://localhost:3000{RST}
+  {C}→ Open Grafana at http://localhost:3000{RST}
+  {DIM}Dashboard auto-refreshes every 5 seconds{RST}
 {B}{'═' * 60}{RST}
 """)
 
-    except PermissionError:
-        print(f"\n{R}[!] Error: Scapy requires root/sudo to send raw packets.{RST}")
-        sys.exit(1)
     except KeyboardInterrupt:
-        total_pkts = sum(stats.values())
-        print(f"\n{Y}[!] Simulation interrupted — {total_pkts} packets sent before stop.{RST}")
+        conn.close()
+        total = sum(stats.values())
+        print(f"\n{Y}[!] Interrupted — {total} alerts injected, {len(blacklisted)} IPs blacklisted.{RST}")
         sys.exit(0)
